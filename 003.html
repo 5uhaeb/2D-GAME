@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hyperion.io</title> 
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #111;
+            font-family: Arial, sans-serif;
+        }
+
+        #renderDiv {
+            width: 100%;
+            height: 100%;
+            background-color: #333;
+            position: relative;
+        }
+
+        #miniMapContainer {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 150px;
+            height: 100px;
+            background-color: rgba(255, 255, 255, 0.5);
+            border: 2px solid #000;
+            overflow: hidden;
+        }
+
+        #miniMapPlayer {
+            width: 5px;
+            height: 5px;
+            background-color: #39FF14;
+            border-radius: 50%;
+            position: absolute;
+        }
+
+        #sidePanel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: 2px solid #fff;
+        }
+	
+        #reloadCanvas {
+    	    background-color: rgba(0, 255, 0, 0.3); /* Light green for debugging */
+	    z-index: 1000;
+	    z-index: 1000; /* Make sure it's high enough to be above the game canvas */
+            position: absolute; /* Absolute positioning relative to the page */
+    	    transform: translate(-50%, -50%);
+    	    position: absolute;
+        }
+    </style>
+</head>
+<body>
+
+<div id="renderDiv"></div>
+<div id="miniMapContainer">
+    <div id="miniMapPlayer"></div>
+</div>
+<div id="sidePanel">Grid: (0, 0)<br>Weapon: None<br>Ammo: --<br>Health: 100</div>
+<canvas id="reloadCanvas" width="100" height="100" style="display: none; position: absolute;"></canvas>
+ <!-- Place after other elements -->
+
+
+<!-- Phaser 3 Game Script -->
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js"></script>
+<script>
+class GridShooter extends Phaser.Scene {
+    constructor() {
+        super();
+    }
+
+    preload() {
+        // Preload assets (can be expanded with more sprites)
+        this.load.image('bullet', 'bullet.png'); // Placeholder for bullet images
+        this.load.image('player', 'player.png'); // Placeholder for player sprite
+    }
+
+    create() {
+        // Game variables
+        this.health = 100;
+        this.reloadInProgress = false;
+
+        // Movement speed and camera setup
+        this.playerSpeed = 300;
+
+        // Set world and camera bounds
+        this.cameras.main.setBounds(0, 0, 3000, 2000);
+        this.physics.world.setBounds(0, 0, 3000, 2000);
+
+        // Create grid
+        this.createGrid();
+
+        // Add player (represented as a sprite for performance)
+        this.player = this.physics.add.image(1500, 1000, 'player');
+        this.player.setDisplaySize(30, 30);
+        this.player.setCollideWorldBounds(true);
+        this.cameras.main.startFollow(this.player, true, 0.05, 0.05);
+
+        // Setup input keys for player movement
+        this.cursors = this.input.keyboard.createCursorKeys();
+
+        // Weapons setup with improved stats
+        this.weapons = {
+            SR: {
+                name: 'Sniper Rifle',
+                design: '▄︻デ══━一',
+                fireRate: 1500,
+                range: 900, // Enhanced range
+                speed: 1500,  // Faster bullet
+                reloadTime: 5000,
+                ammo: 5,
+                maxAmmo: 5,
+                auto: false,
+                zoom: 0.75 // More zoom for sniper rifle
+            },
+            AR: {
+                name: 'Assault Rifle',
+                design: 'ᡕᠵデ气亠',
+                fireRate: 120,
+                range: 500,
+                speed: 1000,
+                reloadTime: 3000,
+                ammo: 30,
+                maxAmmo: 30,
+                auto: true,  // Hold to auto-fire
+                zoom: 1
+            },
+            SMG: {
+                name: 'SMG',
+                design: '⌐╦╦═-',
+                fireRate: 100,
+                range: 400,
+                speed: 800,
+                reloadTime: 2000,
+                ammo: 50,
+                maxAmmo: 50,
+                auto: true,
+                zoom: 1
+            }
+        };
+
+        this.currentWeapon = this.weapons.AR;
+        this.lastFired = 0;
+
+        // Bullets group with optimized performance
+        this.bullets = this.physics.add.group({
+            defaultKey: 'bullet',
+            maxSize: 100,
+        });
+
+        // Weapon switching using number keys
+        this.input.keyboard.on('keydown-ONE', () => this.switchWeapon('SR'));
+        this.input.keyboard.on('keydown-TWO', () => this.switchWeapon('AR'));
+        this.input.keyboard.on('keydown-THREE', () => this.switchWeapon('SMG'));
+
+        // Manual reload (R key)
+        this.input.keyboard.on('keydown-R', () => this.reloadWeapon());
+
+        // Mouse input for firing
+        this.input.on('pointerdown', () => this.startFiring());
+        this.input.on('pointerup', () => this.stopFiring());
+
+        // Create the weapon and display HUD
+        this.createWeapon();
+        this.createHUD();
+
+        // Create aim line for aiming
+        this.aimLine = this.add.graphics();
+
+        // Collision detection for player health reduction
+        this.physics.add.collider(this.bullets, this.player, this.handlePlayerHit, null, this);
+    }
+
+    update() {
+        // Update player movement
+        this.updatePlayerMovement();
+
+        // Update weapon position and rotation with player
+        this.updateWeaponPosition();
+
+        // Update the HUD
+        this.createHUD();
+
+        // Recycle bullets that leave the world bounds
+        this.bullets.getChildren().forEach(bullet => {
+            if (bullet.x < 0 || bullet.x > 3000 || bullet.y < 0 || bullet.y > 2000) {
+                this.bullets.killAndHide(bullet);
+            }
+        });
+
+        // Draw aim line when aiming
+        if (this.input.activePointer.isDown) {
+            this.drawAimLine();
+        } else {
+            this.aimLine.clear();  // Clear aim line when not aiming
+        }
+    }
+
+    // Grid creation for map coordinates
+    createGrid() {
+        const graphics = this.add.graphics();
+        graphics.lineStyle(1, 0x0000ff, 0.8);
+        for (let x = 0; x <= 3000; x += 100) {
+            graphics.moveTo(x, 0);
+            graphics.lineTo(x, 2000);
+        }
+        for (let y = 0; y <= 2000; y += 100) {
+            graphics.moveTo(0, y);
+            graphics.lineTo(3000, y);
+        }
+        graphics.strokePath();
+
+        // Add grid coordinates
+        for (let x = 0; x < 30; x++) {
+            for (let y = 0; y < 20; y++) {
+                this.add.text(x * 100 + 5, y * 100 + 5, `(${x},${y})`, {
+                    fontSize: '10px',
+                    fill: '#ffffff'
+                });
+            }
+        }
+    }
+
+    // Weapon display and HUD enhancements
+    createWeapon() {
+        if (this.weapon) {
+            this.weapon.destroy();
+        }
+
+        // Attach the new weapon to the player
+        this.weapon = this.add.text(this.player.x, this.player.y, this.currentWeapon.design, {
+            fontSize: '20px',
+            fill: '#ffffff'
+        });
+        this.weapon.setOrigin(0.5);
+    }
+
+    createHUD() {
+        const gridX = Math.floor(this.player.x / 100);
+        const gridY = Math.floor(this.player.y / 100);
+        const ammoInfo = `Ammo: ${this.currentWeapon.ammo}/${this.currentWeapon.maxAmmo}`;
+        document.getElementById('sidePanel').innerHTML = `Grid: (${gridX}, ${gridY})<br>Weapon: ${this.currentWeapon.name}<br>${ammoInfo}<br>Health: ${this.health}`;
+        
+        // Update mini-map
+        const miniMapPlayer = document.getElementById('miniMapPlayer');
+        const mapX = (this.player.x / 3000) * 150; // Scale player position to mini-map width
+        const mapY = (this.player.y / 2000) * 100; // Scale player position to mini-map height
+        miniMapPlayer.style.transform = `translate(${mapX}px, ${mapY}px)`;
+    }
+
+    switchWeapon(weaponType) {
+        this.currentWeapon = this.weapons[weaponType];
+        this.createWeapon();
+        this.cameras.main.setZoom(this.currentWeapon.zoom);
+    }
+
+    reloadWeapon() {
+    if (this.reloadInProgress) return;
+
+    this.reloadInProgress = true;
+
+    // Start the reload animation for the current weapon's reload time
+    this.startReloadAnimation(this.currentWeapon.reloadTime);
+
+    setTimeout(() => {
+        this.currentWeapon.ammo = this.currentWeapon.maxAmmo;
+        this.reloadInProgress = false;
+        this.createHUD();
+    }, this.currentWeapon.reloadTime);
+}
+
+startReloadAnimation(duration) {
+    const canvas = document.getElementById('reloadCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Set canvas size and make it visible
+    canvas.width = 100;
+    canvas.height = 100;
+    canvas.style.display = 'block';
+
+    // Ensure the canvas follows the player position in real time
+    this.updateReloadCanvasPosition();
+
+    // Circle drawing parameters
+    const radius = 40;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const totalSegments = 60;
+    const segmentDelay = duration / totalSegments;
+    let segmentCount = 0;
+
+    const animateReload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw arc for current reload progress
+        const startAngle = 0;
+        const endAngle = (segmentCount / totalSegments) * 2 * Math.PI;
+
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+        ctx.strokeStyle = '#39FF14'; // Green color for the circle
+        ctx.lineWidth = 5; // Line thickness for visibility
+        ctx.stroke();
+
+        segmentCount++;
+
+        if (segmentCount <= totalSegments) {
+            setTimeout(() => {
+                requestAnimationFrame(animateReload);
+            }, segmentDelay);
+        } else {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.style.display = 'none';
+        }
+    };
+
+    animateReload();
+}
+
+// New method to update canvas position to follow the player
+updateReloadCanvasPosition() {
+    const canvas = document.getElementById('reloadCanvas');
+    const playerPositionX = this.player.x;
+    const playerPositionY = this.player.y;
+    const playerSize = 30; // Player size (adjust as needed)
+
+    // Center the reload canvas over the player
+    canvas.style.left = `${Math.round(playerPositionX - canvas.width / 2 + playerSize / 2)}px`;
+    canvas.style.top = `${Math.round(playerPositionY - canvas.height / 2 + playerSize / 2)}px`;
+}
+
+update() {
+    // Call to update the reload circle position during reload
+    if (this.reloadInProgress) {
+        this.updateReloadCanvasPosition();
+    }
+
+    // Rest of the update logic
+    this.updatePlayerMovement();
+    this.updateWeaponPosition();
+    this.createHUD();
+    // Other update-related code
+}
+
+
+
+
+
+    startFiring() {
+        if (!this.reloadInProgress && this.currentWeapon.ammo > 0) {
+            if (this.input.activePointer.isDown) { 
+                if (this.currentWeapon.auto) {
+                    this.autoFireEvent = this.time.addEvent({
+                        delay: this.currentWeapon.fireRate,
+                        callback: this.fireBullet,
+                        callbackScope: this,
+                        loop: true
+                    });
+                } else {
+                    this.fireBullet();
+                }
+            }
+        }
+    }
+
+    stopFiring() {
+        if (this.autoFireEvent) {
+            this.autoFireEvent.remove();
+            this.autoFireEvent = null;
+        }
+    }
+
+    fireBullet() {
+        if (this.currentWeapon.ammo <= 0) return;
+
+        const bullet = this.bullets.get(this.player.x, this.player.y, 'bullet');
+        bullet.setActive(true).setVisible(true);
+
+        const pointer = this.input.activePointer;
+        const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+        this.physics.velocityFromRotation(angle, this.currentWeapon.speed, bullet.body.velocity);
+
+        bullet.setRotation(angle);
+        this.currentWeapon.ammo--;
+        this.createHUD();
+    }
+
+    updatePlayerMovement() {
+        let velocityX = 0;
+        let velocityY = 0;
+        const speed = this.currentWeapon.name === 'Sniper Rifle' ? 100 : 300;
+
+        if (this.cursors.left.isDown || this.input.keyboard.addKey('A').isDown) {
+            velocityX -= speed;
+        }
+        if (this.cursors.right.isDown || this.input.keyboard.addKey('D').isDown) {
+            velocityX += speed;
+        }
+        if (this.cursors.up.isDown || this.input.keyboard.addKey('W').isDown) {
+            velocityY -= speed;
+        }
+        if (this.cursors.down.isDown || this.input.keyboard.addKey('S').isDown) {
+            velocityY += speed;
+        }
+
+        this.player.setVelocity(velocityX, velocityY);
+    }
+
+    updateWeaponPosition() {
+    // Calculate the angle between the player and the mouse pointer
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, this.input.activePointer.worldX, this.input.activePointer.worldY);
+
+    // Offset distance from the player to the weapon
+    const offsetDistance = 30;  // Adjust as needed for desired weapon distance from player
+
+    // Calculate weapon position based on angle and offset distance
+    this.weapon.x = this.player.x + Math.cos(angle) * offsetDistance;
+    this.weapon.y = this.player.y + Math.sin(angle) * offsetDistance;
+
+    // Rotate the weapon to match the aiming direction
+    this.weapon.setRotation(angle);
+
+    // Flip the weapon vertically if aiming left (angle is outside -90 to 90 degrees)
+    if (angle > Math.PI / 2 || angle < -Math.PI / 2) {
+        this.weapon.scaleY = -1; // Flip vertically
+    } else {
+        this.weapon.scaleY = 1;  // Default orientation
+    }
+}
+
+    drawAimLine() {
+        this.aimLine.clear();
+        this.aimLine.lineStyle(2, 0xff0000);
+        this.aimLine.beginPath();
+        this.aimLine.moveTo(this.player.x, this.player.y);
+        const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, this.input.activePointer.worldX, this.input.activePointer.worldY);
+        const distance = 100; 
+        const endX = this.player.x + Math.cos(angle) * distance;
+        const endY = this.player.y + Math.sin(angle) * distance;
+        this.aimLine.lineTo(endX, endY);
+        this.aimLine.strokePath();
+    }
+
+    // Collision handling
+    handlePlayerHit(player, bullet) {
+        this.health -= 10; // Reduce health by 10 when hit by bullet
+        bullet.destroy();
+        this.createHUD();
+
+        if (this.health <= 0) {
+            this.scene.restart();  // Restart the game if health reaches zero
+        }
+    }
+}
+
+const container = document.getElementById('renderDiv');
+const config = {
+    type: Phaser.AUTO,
+    parent: 'renderDiv',
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    width: 800,
+    height: 600,
+    physics: {
+        default: 'arcade',
+        arcade: {
+            gravity: { y: 0 },
+            debug: false
+        }
+    },
+    scene: GridShooter
+};
+
+const game = new Phaser.Game(config);
+</script>
+</body>
+</html>
